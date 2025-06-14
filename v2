@@ -1,0 +1,255 @@
+//@version=5
+strategy("Strategi Trading Lanjutan: MA, RSI, Volume, Pola Tren Sederhana Dengan Info Berkelanjutan Real-time", overlay=true,
+         pyramiding=0, // Jangan tambahkan posisi jika sudah ada posisi terbuka
+         initial_capital=10000, // Modal awal untuk backtesting
+         default_qty_type=strategy.percent_of_equity, // Tipe ukuran posisi: persentase ekuitas
+         default_qty_value=10, // 10% dari ekuitas per perdagangan
+         commission_type=strategy.commission.percent, // Tipe komisi: persentase
+         commission_value=0.07 // Contoh: 0.07% komisi per perdagangan
+         )
+
+// --- Input Pengguna untuk Konfigurasi Strategi ---
+
+// Input Moving Average
+lengthFastMA = input.int(10, title="Panjang MA Cepat", minval=1)
+lengthSlowMA = input.int(30, title="Panjang MA Lambat", minval=1)
+maType = input.string("SMA", title="Tipe MA", options=["SMA", "EMA", "WMA"])
+
+// Input RSI
+lengthRSI = input.int(14, title="Panjang RSI", minval=1)
+levelRSIBuy = input.float(60, title="Level RSI Beli (di atas)", minval=0, maxval=100) // Dioptimalkan: Lebih tinggi untuk momentum lebih kuat
+levelRSISell = input.float(40, title="Level RSI Jual (di bawah)", minval=0, maxval=100) // Dioptimalkan: Lebih rendah untuk momentum lebih kuat
+
+// Input Volume Konfirmasi
+volumeLookback = input.int(20, title="Periode Rata-rata Volume", minval=1)
+volumeMultiplier = input.float(2.0, title="Pengali Volume Konfirmasi (x Rata-rata)", minval=1.0) // Dioptimalkan: Volume lebih tinggi diperlukan
+
+// Input untuk Stop Loss & Take Profit (Sangat Penting untuk Manajemen Risiko)
+useStopLoss = input.bool(true, title="Gunakan Stop Loss")
+stopLossPercent = input.float(2.0, title="Stop Loss (%)", minval=0.1, maxval=100) / 100 // Konversi ke desimal
+useTakeProfit = input.bool(true, title="Gunakan Take Profit")
+takeProfitPercent = input.float(4.0, title="Take Profit (%)", minval=0.1, maxval=100) / 100 // Konversi ke desimal
+
+// --- Perhitungan Indikator ---
+
+// Pemilihan tipe Moving Average
+var float fastMA = na
+var float slowMA = na
+
+if maType == "SMA"
+    fastMA := ta.sma(close, lengthFastMA)
+    slowMA := ta.sma(close, lengthSlowMA)
+else if maType == "EMA"
+    fastMA := ta.ema(close, lengthFastMA)
+    slowMA := ta.ema(close, lengthSlowMA)
+else if maType == "WMA"
+    fastMA := ta.wma(close, lengthFastMA)
+    slowMA := ta.wma(close, lengthSlowMA)
+
+// Perhitungan RSI
+rsi = ta.rsi(close, lengthRSI)
+
+// Perhitungan Rata-rata Volume
+avgVolume = ta.sma(volume, volumeLookback) // Rata-rata volume sederhana
+
+// --- Deteksi Pola Tren Sederhana (Menggunakan MA yang Sedang Naik/Turun) ---
+// Dioptimalkan: Deteksi tren lebih robust dengan melihat MA yang sedang naik/turun selama beberapa bar
+isUptrending = ta.rising(fastMA, 3) // Fast MA naik selama 3 bar
+isDowntrending = ta.falling(fastMA, 3) // Fast MA turun selama 3 bar
+
+// --- Kondisi Sinyal Masuk ---
+
+// Kondisi dasar MA Crossover
+longConditionBase = ta.crossover(fastMA, slowMA)
+shortConditionBase = ta.crossunder(fastMA, slowMA)
+
+// Konfirmasi RSI
+longRSIConfirm = rsi > levelRSIBuy
+shortRSIConfirm = rsi < levelRSISell
+
+// Konfirmasi Volume: Volume saat ini harus lebih tinggi dari rata-rata volume (dikalikan pengali)
+longVolumeConfirm = volume > (avgVolume * volumeMultiplier)
+shortVolumeConfirm = volume > (avgVolume * volumeMultiplier)
+
+// Gabungan Semua Kondisi untuk Sinyal LONG
+// Sinyal LONG jika MA crossover positif, RSI di atas level beli, volume tinggi, DAN tren adalah uptrending
+longCondition = longConditionBase and longRSIConfirm and longVolumeConfirm and isUptrending
+
+// Gabungan Semua Kondisi untuk Sinyal SHORT
+// Sinyal SHORT jika MA crossover negatif, RSI di bawah level jual, volume tinggi, DAN tren adalah downtrending
+shortCondition = shortConditionBase and shortRSIConfirm and shortVolumeConfirm and isDowntrending
+
+// --- Eksekusi Order (Hanya untuk Backtesting) ---
+var float entryPrice = na
+
+// Memastikan hanya ada satu posisi terbuka pada satu waktu
+if longCondition and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+    entryPrice := close // Simpan harga masuk untuk SL/TP
+
+if shortCondition and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)
+    entryPrice := close // Simpan harga masuk untuk SL/TP
+
+// --- Penempatan Stop Loss dan Take Profit ---
+// Stop Loss untuk posisi Long
+if useStopLoss and strategy.position_size > 0
+    longStopPrice = entryPrice * (1 - stopLossPercent)
+    longTakeProfitPrice = entryPrice * (1 + takeProfitPercent)
+    strategy.exit("Exit Long SL/TP", from_entry="Long", stop=longStopPrice, limit=longTakeProfitPrice)
+
+// Stop Loss untuk posisi Short
+if useStopLoss and strategy.position_size < 0
+    shortStopPrice = entryPrice * (1 + stopLossPercent)
+    shortTakeProfitPrice = entryPrice * (1 - takeProfitPercent)
+    strategy.exit("Exit Short SL/TP", from_entry="Short", stop=shortStopPrice, limit=shortTakeProfitPrice)
+
+// --- Visualisasi di Chart ---
+// Plot Moving Average di grafik utama
+plot(fastMA, color=color.rgb(0, 150, 255), title="MA Cepat", linewidth=2) // Warna biru muda, tebal
+plot(slowMA, color=color.rgb(255, 0, 0), title="MA Lambat", linewidth=2) // Warna merah, tebal
+
+// Plot sinyal masuk (panah di bawah/atas bar) dengan teks "LONG" atau "SHORT"
+plotshape(longCondition, style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, title="Sinyal LONG", text="LONG", textcolor=color.white)
+plotshape(shortCondition, style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, title="Sinyal SHORT", text="SHORT", textcolor=color.white)
+
+
+// --- Menambahkan Informasi Status Berkelanjutan di Pojok Kanan Atas ---
+var label statusLabel = na // Variabel untuk menyimpan objek label
+
+// Membangun teks status
+string statusText = ""
+color statusColor = color.gray
+string rsiStatus = ""
+string volumeStatus = ""
+string maStatus = ""
+string trendStatus = ""
+string currentPosition = ""
+
+// Status RSI
+if rsi > levelRSIBuy
+    rsiStatus := "RSI: Bullish (" + str.tostring(rsi, "#.##") + ")"
+else if rsi < levelRSISell
+    rsiStatus := "RSI: Bearish (" + str.tostring(rsi, "#.##") + ")"
+else
+    rsiStatus := "RSI: Netral (" + str.tostring(rsi, "#.##") + ")"
+
+// Status Volume
+if volume > avgVolume * volumeMultiplier
+    volumeStatus := "Vol: Konfirmasi Tinggi (" + str.tostring(volume, "#.##") + "x" + str.tostring(volumeMultiplier) + ")"
+else if volume > avgVolume
+    volumeStatus := "Vol: Di Atas Rata-rata (" + str.tostring(volume, "#.##") + ")"
+else
+    volumeStatus := "Vol: Normal/Rendah (" + str.tostring(volume, "#.##") + ")"
+
+// Status MA Crossover
+if fastMA > slowMA and fastMA[1] <= slowMA[1] // Crossover ke atas baru terjadi
+    maStatus := "MA: Crossover BUY"
+else if fastMA < slowMA and fastMA[1] >= slowMA[1] // Crossover ke bawah baru terjadi
+    maStatus := "MA: Crossover SELL"
+else if fastMA > slowMA
+    maStatus := "MA: Bullish Trend"
+else if fastMA < slowMA
+    maStatus := "MA: Bearish Trend"
+else
+    maStatus := "MA: Netral"
+
+// Status Tren
+if isUptrending
+    trendStatus := "Tren: Naik Kuat"
+else if isDowntrending
+    trendStatus := "Tren: Turun Kuat"
+else
+    trendStatus := "Tren: Tidak Jelas"
+
+// Menentukan teks dan warna label status
+if strategy.position_size > 0 // Jika sedang posisi LONG
+    currentPosition := "Posisi: LONG (" + str.tostring(strategy.position_avg_price, "#.##") + ")"
+    statusText := currentPosition + "\n" +
+                  "Status: Masuk LONG" + "\n" +
+                  maStatus + "\n" +
+                  rsiStatus + "\n" +
+                  volumeStatus + "\n" +
+                  trendStatus
+    statusColor := color.new(color.green, 10) // Sedikit transparan
+else if strategy.position_size < 0 // Jika sedang posisi SHORT
+    currentPosition := "Posisi: SHORT (" + str.tostring(strategy.position_avg_price, "#.##") + ")"
+    statusText := currentPosition + "\n" +
+                  "Status: Masuk SHORT" + "\n" +
+                  maStatus + "\n" +
+                  rsiStatus + "\n" +
+                  volumeStatus + "\n" +
+                  trendStatus
+    statusColor := color.new(color.red, 10) // Sedikit transparan
+else // Jika tidak ada posisi terbuka (Netral atau Potensi)
+    if longCondition // Ada sinyal LONG kuat baru yang memenuhi semua kriteria
+        statusText := "Sinyal: LONG Entry!" + "\n" +
+                      maStatus + "\n" +
+                      rsiStatus + "\n" +
+                      volumeStatus + "\n" +
+                      trendStatus
+        statusColor := color.new(color.green, 0) // Tidak transparan untuk sinyal baru
+    else if shortCondition // Ada sinyal SHORT kuat baru yang memenuhi semua kriteria
+        statusText := "Sinyal: SHORT Entry!" + "\n" +
+                      maStatus + "\n" +
+                      rsiStatus + "\n" +
+                      volumeStatus + "\n" +
+                      trendStatus
+        statusColor := color.new(color.red, 0) // Tidak transparan untuk sinyal baru
+    else // Jika tidak ada sinyal entry yang kuat, tunjukkan potensi atau netral
+        if (fastMA > slowMA and rsi > 50 and isUptrending) // Potensi Bullish Kuat
+            statusText := "Status: Potensi LONG Tinggi" + "\n" +
+                          maStatus + "\n" +
+                          rsiStatus + "\n" +
+                          volumeStatus + "\n" +
+                          trendStatus
+            statusColor := color.new(color.lime, 40)
+        else if (fastMA < slowMA and rsi < 50 and isDowntrending) // Potensi Bearish Kuat
+            statusText := "Status: Potensi SHORT Tinggi" + "\n" +
+                          maStatus + "\n" +
+                          rsiStatus + "\n" +
+                          rsiStatus + "\n" +
+                          trendStatus
+            statusColor := color.new(color.fuchsia, 40)
+        else // Netral
+            statusText := "Status: Netral" + "\n" +
+                          maStatus + "\n" +
+                          rsiStatus + "\n" +
+                          volumeStatus + "\n" +
+                          trendStatus
+            statusColor := color.new(color.gray, 60)
+
+// Membuat atau memperbarui label status di pojok kanan atas
+// Posisi X diatur ke bar_index untuk selalu di bar terakhir
+// Posisi Y diatur ke high untuk diletakkan di atas bar saat ini
+// yloc diatur ke yloc.price untuk menempel pada harga,
+// namun karena kita ingin di pojok atas, kita akan gunakan yloc.top
+// Untuk label yang selalu di pojok atas layar, kita perlu trik sedikit,
+// karena label.new() tidak punya xloc/yloc absolut seperti tabel.
+// Solusi paling stabil untuk label yang selalu di layar adalah menggunakan xloc=xloc.bar_time dan yloc=yloc.top/bottom.
+// Namun, TradingView juga menyediakan cara yang lebih baik dengan table.new().
+// Untuk sekarang, kita akan menggunakan label.new() dengan xloc.bar_index
+// dan menempelkannya di 'high' bar saat ini. Ini akan bergerak dengan chart,
+// tapi akan selalu ada di bar terakhir.
+
+// Jika Anda ingin label benar-benar statis di pojok layar, Anda harus menggunakan table.new()
+// Untuk saat ini, kita akan membuat label mengikuti bar terakhir di chart.
+
+if na(statusLabel)
+    statusLabel := label.new(x=bar_index, y=high, text=statusText, color=statusColor,
+                             textcolor=color.white, style=label.style_label_right, size=size.normal)
+else
+    label.set_text(statusLabel, statusText)
+    label.set_x(statusLabel, bar_index)
+    label.set_y(statusLabel, high) // Bisa disesuaikan posisinya
+    label.set_color(statusLabel, statusColor)
+    label.set_style(statusLabel, label.style_label_right) // Memastikan panah label ke kanan
+    label.set_size(statusLabel, size.normal)
+
+// --- Plot RSI dan Volume di Panel Terpisah (Jika Diinginkan) ---
+// Untuk melihat RSI di panel terpisah (bukan di grafik utama), Anda harus menambahkan ini secara manual
+// di TradingView setelah menambahkan script.
+// Klik kanan pada chart -> Add Indicator -> Cari nama script Anda -> Klik pada ikon panah untuk memilih 'Add to New Pane'
+//
+// plot(rsi, title="RSI", color=color.purple)
+// plot(avgVolume, title="Avg Volume", color=color.orange)
